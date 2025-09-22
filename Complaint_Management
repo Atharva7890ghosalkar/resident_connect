@@ -1,0 +1,238 @@
+# AMS Python GUI Conversion from WideCanvas
+# Includes Tkinter UI + MongoDB Integration + Email Notifications + Event Features
+
+import tkinter as tk
+from tkinter import messagebox, ttk, scrolledtext, simpledialog, filedialog
+from pymongo import MongoClient
+from bson import ObjectId
+from datetime import datetime
+import smtplib
+from email.mime.text import MIMEText
+import csv
+
+# ------------------------- Configurations -------------------------
+client = MongoClient("mongodb://localhost:27017/")
+db_apartment = client["Apartment"]
+db_event = client["CommunityEventSystem"]
+
+residents_col = db_apartment["residents"]
+complaints_col = db_apartment["complaints"]
+events_col = db_event["events"]
+registrations_col = db_event["registrations"]
+
+EMAIL_USER = "atharvaghosalkar22@gmail.com"
+EMAIL_PASS = ""
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+
+# ------------------------- Utility Functions -------------------------
+def send_email_notification(to_email, status):
+    try:
+        subject = "Complaint Status Updated"
+        body = f"Your complaint status has been updated to: {status}"
+
+        msg = MIMEText(body)
+        msg["Subject"] = subject
+        msg["From"] = EMAIL_USER
+        msg["To"] = to_email
+
+        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+        server.starttls()
+        server.login(EMAIL_USER, EMAIL_PASS)
+        server.sendmail(EMAIL_USER, to_email, msg.as_string())
+        server.quit()
+    except Exception as e:
+        print("Failed to send email:", e)
+
+# ------------------------- GUI Class -------------------------
+class ApartmentApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Apartment Management System")
+        self.root.geometry("900x600")
+
+        self.tabs = ttk.Notebook(root)
+        self.tabs.pack(fill="both", expand=True)
+
+        self.create_resident_tab()
+        self.create_admin_tab()
+
+    def create_resident_tab(self):
+        tab = tk.Frame(self.tabs)
+        self.tabs.add(tab, text="Resident Panel")
+
+        # Complaint form
+        tk.Label(tab, text="Resident Name").grid(row=0, column=0, padx=5, pady=5)
+        self.name_entry = tk.Entry(tab, width=40)
+        self.name_entry.grid(row=0, column=1)
+
+        autofill_btn = tk.Button(tab, text="Auto-fill", command=self.autofill_details)
+        autofill_btn.grid(row=0, column=2, padx=5)
+
+        tk.Label(tab, text="Room Number").grid(row=1, column=0, padx=5)
+        self.room_entry = tk.Entry(tab, width=40)
+        self.room_entry.grid(row=1, column=1)
+
+        tk.Label(tab, text="Email").grid(row=2, column=0, padx=5)
+        self.email_entry = tk.Entry(tab, width=40)
+        self.email_entry.grid(row=2, column=1)
+
+        tk.Label(tab, text="Complaint Description").grid(row=3, column=0, padx=5)
+        self.complaint_text = scrolledtext.ScrolledText(tab, width=50, height=5)
+        self.complaint_text.grid(row=3, column=1)
+
+        submit_btn = tk.Button(tab, text="Submit Complaint", bg="green", fg="white",
+                               command=self.submit_complaint)
+        submit_btn.grid(row=4, column=1, pady=10)
+
+        # Event list
+        tk.Label(tab, text="Upcoming Events", font=("Arial", 14, "bold")).grid(row=5, column=0, columnspan=2, pady=10)
+        self.event_tree = ttk.Treeview(tab, columns=("title", "date", "venue"), show="headings")
+        self.event_tree.heading("title", text="Title")
+        self.event_tree.heading("date", text="Date")
+        self.event_tree.heading("venue", text="Venue")
+        self.event_tree.grid(row=6, column=0, columnspan=3)
+        self.event_tree.bind("<Double-1>", self.register_for_event)
+
+        self.load_events()
+
+    def create_admin_tab(self):
+        tab = tk.Frame(self.tabs)
+        self.tabs.add(tab, text="Admin Panel")
+
+        tk.Label(tab, text="Username").grid(row=0, column=0)
+        self.admin_user = tk.Entry(tab)
+        self.admin_user.grid(row=0, column=1)
+
+        tk.Label(tab, text="Password").grid(row=1, column=0)
+        self.admin_pass = tk.Entry(tab, show="*")
+        self.admin_pass.grid(row=1, column=1)
+
+        login_btn = tk.Button(tab, text="Login", command=self.admin_login)
+        login_btn.grid(row=2, column=1, pady=5)
+
+        self.admin_frame = tk.Frame(tab)
+        self.admin_frame.grid(row=3, column=0, columnspan=3, pady=10)
+        self.admin_frame.grid_remove()
+
+    def autofill_details(self):
+        name = self.name_entry.get()
+        res = residents_col.find_one({"name": name})
+        if res:
+            self.room_entry.delete(0, tk.END)
+            self.room_entry.insert(0, res.get("roomNumber", ""))
+            self.email_entry.delete(0, tk.END)
+            self.email_entry.insert(0, res.get("email", ""))
+        else:
+            messagebox.showinfo("Info", "Resident not found")
+
+    def submit_complaint(self):
+        name = self.name_entry.get()
+        room = self.room_entry.get()
+        email = self.email_entry.get()
+        complaint = self.complaint_text.get("1.0", tk.END).strip()
+
+        if not name or not room or not email or not complaint:
+            messagebox.showerror("Error", "Please fill all fields")
+            return
+
+        complaints_col.insert_one({
+            "name": name,
+            "roomNumber": room,
+            "email": email,
+            "complaint": complaint,
+            "status": "Pending",
+            "date": datetime.now().isoformat()
+        })
+        messagebox.showinfo("Success", "Complaint submitted")
+        self.name_entry.delete(0, tk.END)
+        self.room_entry.delete(0, tk.END)
+        self.email_entry.delete(0, tk.END)
+        self.complaint_text.delete("1.0", tk.END)
+
+    def load_events(self):
+        self.event_tree.delete(*self.event_tree.get_children())
+        for ev in events_col.find():
+            self.event_tree.insert('', 'end', iid=str(ev['_id']), values=(ev['title'], ev['date'], ev['venue']))
+
+    def register_for_event(self, event):
+        item = self.event_tree.selection()[0]
+        event_id = ObjectId(item)
+        name = self.name_entry.get()
+        email = self.email_entry.get()
+        if not name or not email:
+            messagebox.showerror("Error", "Enter your name and email before registering")
+            return
+
+        if registrations_col.find_one({"eventId": str(event_id), "email": email}):
+            messagebox.showwarning("Already Registered", "You are already registered for this event")
+            return
+
+        registrations_col.insert_one({
+            "eventId": str(event_id),
+            "name": name,
+            "email": email,
+            "registrationDate": datetime.now().isoformat()
+        })
+        messagebox.showinfo("Registered", "You have registered successfully")
+
+    def admin_login(self):
+        if self.admin_user.get() == "Atharva" and self.admin_pass.get() == "Atharva123":
+            self.admin_frame.grid()
+            self.load_admin_view()
+        else:
+            messagebox.showerror("Access Denied", "Invalid credentials")
+
+    def load_admin_view(self):
+        for widget in self.admin_frame.winfo_children():
+            widget.destroy()
+
+        columns = ("name", "room", "email", "status")
+        tree = ttk.Treeview(self.admin_frame, columns=columns, show="headings")
+        for col in columns:
+            tree.heading(col, text=col.capitalize())
+        tree.grid(row=0, column=0, columnspan=3)
+
+        self.tree_map = {}
+        for c in complaints_col.find():
+            row = (c["name"], c["roomNumber"], c["email"], c["status"])
+            tree.insert('', 'end', iid=str(c['_id']), values=row)
+            self.tree_map[str(c['_id'])] = c
+
+        def refresh():
+            self.load_admin_view()
+
+        def update_status():
+            selected = tree.selection()
+            if not selected:
+                return
+            cid = selected[0]
+            new_status = simpledialog.askstring("Update", "Enter new status:")
+            if new_status:
+                complaints_col.update_one({"_id": ObjectId(cid)}, {"$set": {"status": new_status}})
+                send_email_notification(self.tree_map[cid]['email'], new_status)
+                refresh()
+
+        tk.Button(self.admin_frame, text="Update Status", command=update_status).grid(row=1, column=0, pady=10)
+        tk.Button(self.admin_frame, text="Refresh", command=refresh).grid(row=1, column=1)
+        tk.Button(self.admin_frame, text="Export Registrations", command=self.export_registrations).grid(row=1, column=2)
+
+    def export_registrations(self):
+        filename = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV files", "*.csv")])
+        if not filename:
+            return
+
+        data = registrations_col.find()
+        with open(filename, mode='w', newline='') as file:
+            writer = csv.writer(file)
+            writer.writerow(["Name", "Email", "Event ID", "Date"])
+            for reg in data:
+                writer.writerow([reg["name"], reg["email"], reg["eventId"], reg["registrationDate"]])
+
+        messagebox.showinfo("Exported", "Registrations exported to CSV")
+
+# ------------------------- Main App -------------------------
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = ApartmentApp(root)
+    root.mainloop()
